@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex">
+  <title>Your photo</title>
+  <style>
+    :root {
+      --white: #ffffff;
+      --ink: #141414;
+      --ink-soft: #6b6b6b;
+      --rule: #e6e4e0;
+      --red: #c73a2f;
+      box-sizing: border-box;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    [hidden] {
+      display: none !important;
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--white);
+      color: var(--ink);
+      padding: calc(env(safe-area-inset-top, 0px) + 28px) 20px calc(env(safe-area-inset-bottom, 0px) + 32px);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+      text-align: center;
+    }
+
+    .tag {
+      font-size: 12px;
+      letter-spacing: .24em;
+      color: var(--ink-soft);
+      margin: 0;
+    }
+
+    h1 {
+      font-size: 28px;
+      font-weight: 600;
+      letter-spacing: -.02em;
+      margin: 0;
+    }
+
+    .photo {
+      display: block;
+      width: 100%;
+      max-width: 420px;
+    }
+
+    .photo img {
+      display: block;
+      width: 100%;
+      max-height: 60vh;
+      object-fit: contain;
+      background: #f4f3f0;
+      border-radius: 10px;
+      box-shadow: 0 10px 28px rgba(20, 20, 20, .14);
+    }
+
+    .actions {
+      width: 100%;
+      max-width: 420px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .btn {
+      width: 100%;
+      border: none;
+      border-radius: 999px;
+      padding: 18px 24px;
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: .02em;
+      font-family: inherit;
+      cursor: pointer;
+      background: var(--red);
+      color: var(--white);
+      transition: transform .18s cubic-bezier(.34, 1.56, .64, 1), opacity .15s ease;
+    }
+
+    .btn:active {
+      transform: scale(.97);
+      opacity: .85;
+    }
+
+    .btn.outline {
+      background: none;
+      color: var(--ink);
+      border: 1px solid var(--ink);
+      font-size: 16px;
+      padding: 15px 24px;
+    }
+
+    .status {
+      min-height: 22px;
+      margin: 0;
+      font-size: 15px;
+      line-height: 1.5;
+      color: var(--ink-soft);
+      max-width: 420px;
+    }
+
+    .status.ok {
+      color: #2f7d4f;
+      font-weight: 600;
+    }
+
+    .status.warn {
+      color: var(--red);
+    }
+
+    .note {
+      margin: 0;
+      font-size: 13px;
+      color: var(--ink-soft);
+      max-width: 420px;
+      line-height: 1.5;
+    }
+
+    @media (min-width: 700px) {
+      h1 {
+        font-size: 40px;
+      }
+
+      .photo,
+      .actions,
+      .status,
+      .note {
+        max-width: 520px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <p class="tag" id="tag">YOUR PHOTO</p>
+  <h1 id="title">Your photo is ready</h1>
+
+  <a class="photo" id="open" target="_blank" rel="noopener" hidden>
+    <img id="img" alt="Your photo">
+  </a>
+
+  <div class="actions" id="actions" hidden>
+    <button class="btn" id="dl" type="button">Download photo</button>
+    <button class="btn outline" id="share" type="button" hidden>Share / Save to Photos</button>
+  </div>
+
+  <p class="status" id="status" role="status" aria-live="polite"></p>
+  <p class="note" id="note" hidden></p>
+
+  <script>
+    (function () {
+      // Only photos from the two hosts the booth uploads to can be shown here.
+      var ALLOWED = /^(i\.ibb\.co|res\.cloudinary\.com)$/i;
+
+      var q = new URLSearchParams(location.search);
+      var brand = (q.get('b') || '').trim().slice(0, 30);
+      var hours = parseInt(q.get('e'), 10);
+      var raw = (q.get('i') || '').trim();
+      var url = null;
+      try {
+        if (raw && !/^https?:\/\//i.test(raw)) raw = 'https://' + raw;
+        var u = new URL(raw);
+        if (u.protocol === 'https:' && ALLOWED.test(u.hostname)) url = u.href;
+      } catch (e) { }
+
+      var $ = function (id) { return document.getElementById(id); };
+      var statusEl = $('status');
+      function setStatus(msg, cls) { statusEl.textContent = msg || ''; statusEl.className = 'status' + (cls ? ' ' + cls : ''); }
+
+      if (brand) { document.title = brand + ' · your photo'; $('tag').textContent = brand.toUpperCase(); }
+
+      if (!url) {
+        $('title').textContent = 'Link not valid';
+        setStatus('This link doesn\'t look right. Please scan the QR code on the booth again.', 'warn');
+        return;
+      }
+
+      var fileName = (brand || 'photo').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'photo';
+      fileName += '.jpg';
+      var direct = /\/upload\/fl_attachment/.test(url);   // Cloudinary link that already forces a download
+
+      $('img').src = url;
+      $('open').href = url;
+      $('open').hidden = false;
+      $('actions').hidden = false;
+      if (hours > 0) {
+        $('note').textContent = 'This photo is deleted automatically after ' + hours + (hours === 1 ? ' hour' : ' hours') + ', so download it now.';
+        $('note').hidden = false;
+      }
+
+      // Fetch the photo in the background so the buttons respond instantly.
+      var blobPromise = fetch(url, { mode: 'cors', credentials: 'omit' })
+        .then(function (r) { if (!r.ok) throw new Error('bad response'); return r.blob(); })
+        .catch(function () { return null; });
+
+      function saveBlob(blob) {
+        var a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
+      }
+
+      function fallback() {
+        setStatus('Press and hold the photo, then choose “Download image” (or “Save image”).', 'warn');
+        window.open(url, '_blank');
+      }
+
+      $('dl').addEventListener('click', function () {
+        if (direct) {
+          setStatus('Downloading…', 'ok');
+          window.location.href = url;
+          return;
+        }
+        setStatus('Saving…');
+        blobPromise.then(function (blob) {
+          if (blob) { saveBlob(blob); setStatus('Saved! Check your Downloads or Gallery.', 'ok'); }
+          else fallback();
+        });
+      });
+
+      // "Share / Save to Photos" only appears on phones that can share image files (most Android and iPhones).
+      blobPromise.then(function (blob) {
+        if (!blob || !navigator.canShare) return;
+        var file;
+        try { file = new File([blob], fileName, { type: blob.type || 'image/jpeg' }); } catch (e) { return; }
+        if (!navigator.canShare({ files: [file] })) return;
+        $('share').hidden = false;
+        $('share').addEventListener('click', function () {
+          navigator.share({ files: [file] }).catch(function () { });
+        });
+      });
+    })();
+  </script>
+</body>
+
+</html>
