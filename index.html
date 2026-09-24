@@ -247,7 +247,14 @@
         if (!navigator.canShare({ files: [file] })) return;
         $('share').hidden = false;
         $('share').addEventListener('click', function () {
-          navigator.share({ files: [file] }).catch(function () { });
+          setStatus('Opening share sheet…');
+          navigator.share({ files: [file] })
+            .then(function () { setStatus('Saved! Check your Photos or the app you shared to.', 'ok'); })
+            .catch(function (err) {
+              // User cancelling the share sheet isn't an error worth showing.
+              if (err && err.name === 'AbortError') { setStatus(''); return; }
+              setStatus('Couldn\'t share — try Download photo instead.', 'warn');
+            });
         });
       });
     })();
