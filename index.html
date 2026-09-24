@@ -134,6 +134,24 @@
       line-height: 1.5;
     }
 
+    /* Empty state for a photo that's gone (deleted / expired / bad link) */
+    .empty {
+      width: 100%;
+      max-width: 420px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      padding: 40px 20px;
+      background: #f4f3f0;
+      border-radius: 10px;
+    }
+
+    .empty .icon {
+      font-size: 40px;
+      line-height: 1;
+    }
+
     @media (min-width: 700px) {
       h1 {
         font-size: 40px;
@@ -142,7 +160,8 @@
       .photo,
       .actions,
       .status,
-      .note {
+      .note,
+      .empty {
         max-width: 520px;
       }
     }
@@ -156,6 +175,11 @@
   <a class="photo" id="open" target="_blank" rel="noopener" hidden>
     <img id="img" alt="Your photo">
   </a>
+
+  <div class="empty" id="empty" hidden>
+    <div class="icon">📷</div>
+    <div>This photo doesn't exist anymore.</div>
+  </div>
 
   <div class="actions" id="actions" hidden>
     <button class="btn" id="dl" type="button">Download photo</button>
@@ -197,6 +221,57 @@
       fileName += '.jpg';
       var direct = /\/upload\/fl_attachment/.test(url);   // Cloudinary link that already forces a download
 
+      var gone = false; // set true the first time we learn the photo no longer exists
+
+      function showGone() {
+        if (gone) return;
+        gone = true;
+        $('title').textContent = 'Photo not found';
+        $('open').hidden = true;
+        $('empty').hidden = false;
+        $('actions').hidden = true;
+        $('note').hidden = true;
+        setStatus('It may have expired or already been deleted. Please check with the booth if you still need it.', 'warn');
+      }
+
+      // Some hosts (imgbb included) don't 404 a deleted image — they serve an
+      // actual "image not found" graphic at the same URL with a normal 200.
+      // We can't tell from the HTTP status, so we look at the pixels instead:
+      // that kind of graphic is basically a flat color block with a bit of
+      // text, while a real booth photo has far more color variation.
+      function looksLikePlaceholder(imgEl) {
+        try {
+          var w = 32, h = 32;
+          var c = document.createElement('canvas');
+          c.width = w; c.height = h;
+          var ctx = c.getContext('2d');
+          ctx.drawImage(imgEl, 0, 0, w, h);
+          var data = ctx.getImageData(0, 0, w, h).data;
+          var n = w * h, sum = 0, sumSq = 0;
+          for (var i = 0; i < data.length; i += 4) {
+            var lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+            sum += lum; sumSq += lum * lum;
+          }
+          var mean = sum / n;
+          var stddev = Math.sqrt(Math.max(sumSq / n - mean * mean, 0));
+          var ratio = imgEl.naturalWidth / imgEl.naturalHeight;
+          var squarish = ratio > 0.9 && ratio < 1.1;
+          // Very flat image -> almost certainly a placeholder. A squarish
+          // image with somewhat low variance (flat background + some text)
+          // is also treated as one, since real photos are rarely that plain.
+          return stddev < 12 || (squarish && stddev < 35);
+        } catch (e) {
+          return false; // couldn't analyze (e.g. blocked by CORS) — assume it's real
+        }
+      }
+
+      $('img').crossOrigin = 'anonymous';
+      $('img').addEventListener('error', showGone);
+      $('img').addEventListener('load', function () {
+        if (this.naturalWidth === 0 || this.naturalHeight === 0) { showGone(); return; }
+        if (looksLikePlaceholder(this)) showGone();
+      });
+
       $('img').src = url;
       $('open').href = url;
       $('open').hidden = false;
@@ -208,7 +283,11 @@
 
       // Fetch the photo in the background so the buttons respond instantly.
       var blobPromise = fetch(url, { mode: 'cors', credentials: 'omit' })
-        .then(function (r) { if (!r.ok) throw new Error('bad response'); return r.blob(); })
+        .then(function (r) {
+          if (r.status === 404 || r.status === 410) showGone();
+          if (!r.ok) throw new Error('bad response');
+          return r.blob();
+        })
         .catch(function () { return null; });
 
       function saveBlob(blob) {
@@ -222,11 +301,13 @@
       }
 
       function fallback() {
+        if (gone) return;
         setStatus('Press and hold the photo, then choose “Download image” (or “Save image”).', 'warn');
         window.open(url, '_blank');
       }
 
       $('dl').addEventListener('click', function () {
+        if (gone) return;
         if (direct) {
           setStatus('Downloading…', 'ok');
           window.location.href = url;
@@ -234,6 +315,7 @@
         }
         setStatus('Saving…');
         blobPromise.then(function (blob) {
+          if (gone) return;
           if (blob) { saveBlob(blob); setStatus('Saved! Check your Downloads or Gallery.', 'ok'); }
           else fallback();
         });
@@ -241,7 +323,7 @@
 
       // "Share / Save to Photos" only appears on phones that can share image files (most Android and iPhones).
       blobPromise.then(function (blob) {
-        if (!blob || !navigator.canShare) return;
+        if (gone || !blob || !navigator.canShare) return;
         var file;
         try { file = new File([blob], fileName, { type: blob.type || 'image/jpeg' }); } catch (e) { return; }
         if (!navigator.canShare({ files: [file] })) return;
