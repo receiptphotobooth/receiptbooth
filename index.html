@@ -56,20 +56,90 @@
       margin: 0;
     }
 
-    .photo {
+    /* Photo / live-video stage */
+    .stage {
+      position: relative;
       display: block;
       width: 100%;
       max-width: 420px;
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 10px 28px rgba(20, 20, 20, .14);
+      background: #f4f3f0;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-touch-callout: none;
     }
 
-    .photo img {
+    .stage.has-video {
+      touch-action: none;
+      cursor: pointer;
+    }
+
+    .stage img,
+    .stage video {
       display: block;
       width: 100%;
       max-height: 60vh;
       object-fit: contain;
       background: #f4f3f0;
-      border-radius: 10px;
-      box-shadow: 0 10px 28px rgba(20, 20, 20, .14);
+    }
+
+    .stage video {
+      position: absolute;
+      inset: 0;
+      height: 100%;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .15s ease;
+    }
+
+    .stage.playing img {
+      opacity: 0;
+      transition: opacity .15s ease;
+    }
+
+    .stage.playing video {
+      opacity: 1;
+    }
+
+    .live-badge {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 10px 4px 8px;
+      border-radius: 999px;
+      background: rgba(20, 20, 20, .55);
+      color: var(--white);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: .06em;
+      pointer-events: none;
+    }
+
+    .live-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--white);
+    }
+
+    .stage.has-video:not(.playing) .live-dot {
+      animation: pulse 1.6s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: .35; }
+    }
+
+    .hint {
+      margin: -6px 0 0;
+      font-size: 13px;
+      color: var(--ink-soft);
     }
 
     .actions {
@@ -98,6 +168,10 @@
     .btn:active {
       transform: scale(.97);
       opacity: .85;
+    }
+
+    .btn.secondary {
+      background: var(--ink);
     }
 
     .btn.outline {
@@ -157,7 +231,7 @@
         font-size: 40px;
       }
 
-      .photo,
+      .stage,
       .actions,
       .status,
       .note,
@@ -172,9 +246,15 @@
   <p class="tag" id="tag">YOUR PHOTO</p>
   <h1 id="title">Your photo is ready</h1>
 
-  <a class="photo" id="open" target="_blank" rel="noopener" hidden>
+  <div class="stage" id="stage" hidden>
     <img id="img" alt="Your photo">
-  </a>
+    <video id="vid" muted loop playsinline preload="none" hidden></video>
+    <div class="live-badge" id="liveBadge" hidden>
+      <span class="live-dot"></span>LIVE
+    </div>
+  </div>
+
+  <p class="hint" id="hint" hidden>Press and hold the photo to play</p>
 
   <div class="empty" id="empty" hidden>
     <div class="icon">📷</div>
@@ -182,7 +262,8 @@
   </div>
 
   <div class="actions" id="actions" hidden>
-    <button class="btn" id="dl" type="button">Download photo</button>
+    <button class="btn" id="dlPhoto" type="button">Download photo</button>
+    <button class="btn secondary" id="dlVideo" type="button" hidden>Download video</button>
     <button class="btn outline" id="share" type="button" hidden>Share / Save to Photos</button>
   </div>
 
@@ -191,19 +272,34 @@
 
   <script>
     (function () {
-      // Only photos from the two hosts the booth uploads to can be shown here.
+      // Only media from the hosts the booth uploads to can be shown here.
       var ALLOWED = /^(i\.ibb\.co|res\.cloudinary\.com)$/i;
+
+      function parseMediaUrl(raw) {
+        raw = (raw || '').trim();
+        if (!raw) return null;
+        try {
+          if (!/^https?:\/\//i.test(raw)) raw = 'https://' + raw;
+          var u = new URL(raw);
+          if (u.protocol === 'https:' && ALLOWED.test(u.hostname)) return u.href;
+        } catch (e) { }
+        return null;
+      }
+
+      function getExt(url, fallback) {
+        try {
+          var path = new URL(url).pathname;
+          var m = /\.([a-z0-9]{2,4})$/i.exec(path);
+          if (m) return m[1].toLowerCase();
+        } catch (e) { }
+        return fallback;
+      }
 
       var q = new URLSearchParams(location.search);
       var brand = (q.get('b') || '').trim().slice(0, 30);
       var hours = parseInt(q.get('e'), 10);
-      var raw = (q.get('i') || '').trim();
-      var url = null;
-      try {
-        if (raw && !/^https?:\/\//i.test(raw)) raw = 'https://' + raw;
-        var u = new URL(raw);
-        if (u.protocol === 'https:' && ALLOWED.test(u.hostname)) url = u.href;
-      } catch (e) { }
+      var photoUrl = parseMediaUrl(q.get('i'));
+      var videoUrl = parseMediaUrl(q.get('v'));
 
       var $ = function (id) { return document.getElementById(id); };
       var statusEl = $('status');
@@ -211,26 +307,32 @@
 
       if (brand) { document.title = brand + ' · your photo'; $('tag').textContent = brand.toUpperCase(); }
 
-      if (!url) {
+      if (!photoUrl) {
         $('title').textContent = 'Link not valid';
         setStatus('This link doesn\'t look right. Please scan the QR code on the booth again.', 'warn');
         return;
       }
 
-      var fileName = (brand || 'photo').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'photo';
-      fileName += '.jpg';
-      var direct = /\/upload\/fl_attachment/.test(url);   // Cloudinary link that already forces a download
+      var slug = (brand || 'photo').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'photo';
+      var photoFileName = slug + '.' + getExt(photoUrl, 'jpg');
+      var videoFileName = slug + '-live.' + getExt(videoUrl, 'mp4');
+      var directPhoto = /\/upload\/fl_attachment/.test(photoUrl); // Cloudinary link that already forces a download
+      var directVideo = videoUrl ? /\/upload\/fl_attachment/.test(videoUrl) : false;
 
-      var gone = false; // set true the first time we learn the photo no longer exists
+      var gone = false;   // true once we learn the photo no longer exists
+      var videoOk = false; // true once the video has proven it actually loads
+
+      var stage = $('stage'), img = $('img'), vid = $('vid');
 
       function showGone() {
         if (gone) return;
         gone = true;
         $('title').textContent = 'Photo not found';
-        $('open').hidden = true;
+        stage.hidden = true;
         $('empty').hidden = false;
         $('actions').hidden = true;
         $('note').hidden = true;
+        $('hint').hidden = true;
         setStatus('It may have expired or already been deleted. Please check with the booth if you still need it.', 'warn');
       }
 
@@ -256,33 +358,70 @@
           var stddev = Math.sqrt(Math.max(sumSq / n - mean * mean, 0));
           var ratio = imgEl.naturalWidth / imgEl.naturalHeight;
           var squarish = ratio > 0.9 && ratio < 1.1;
-          // Very flat image -> almost certainly a placeholder. A squarish
-          // image with somewhat low variance (flat background + some text)
-          // is also treated as one, since real photos are rarely that plain.
           return stddev < 12 || (squarish && stddev < 35);
         } catch (e) {
           return false; // couldn't analyze (e.g. blocked by CORS) — assume it's real
         }
       }
 
-      $('img').crossOrigin = 'anonymous';
-      $('img').addEventListener('error', showGone);
-      $('img').addEventListener('load', function () {
+      img.crossOrigin = 'anonymous';
+      img.addEventListener('error', showGone);
+      img.addEventListener('load', function () {
         if (this.naturalWidth === 0 || this.naturalHeight === 0) { showGone(); return; }
         if (looksLikePlaceholder(this)) showGone();
       });
 
-      $('img').src = url;
-      $('open').href = url;
-      $('open').hidden = false;
+      img.src = photoUrl;
+      stage.hidden = false;
       $('actions').hidden = false;
+
       if (hours > 0) {
-        $('note').textContent = 'This photo is deleted automatically after ' + hours + (hours === 1 ? ' hour' : ' hours') + ', so download it now.';
+        $('note').textContent = 'This ' + (videoUrl ? 'photo and video are' : 'photo is') + ' deleted automatically after ' + hours + (hours === 1 ? ' hour' : ' hours') + ', so download ' + (videoUrl ? 'them' : 'it') + ' now.';
         $('note').hidden = false;
       }
 
-      // Fetch the photo in the background so the buttons respond instantly.
-      var blobPromise = fetch(url, { mode: 'cors', credentials: 'omit' })
+      // ---- Live video preview (press and hold, like a Live Photo) ----
+      if (videoUrl) {
+        vid.src = videoUrl;
+        vid.hidden = false;
+
+        vid.addEventListener('loadeddata', function () {
+          videoOk = true;
+          stage.classList.add('has-video');
+          $('liveBadge').hidden = false;
+          $('hint').hidden = false;
+          $('title').textContent = 'Your live photo is ready';
+        });
+        vid.addEventListener('error', function () {
+          // Video is broken — quietly fall back to a plain photo.
+          videoOk = false;
+        });
+
+        var holding = false;
+        function startHold(e) {
+          if (!videoOk || gone) return;
+          e.preventDefault();
+          holding = true;
+          stage.classList.add('playing');
+          try { vid.currentTime = 0; } catch (e2) { }
+          var p = vid.play();
+          if (p && p.catch) p.catch(function () { });
+        }
+        function endHold() {
+          if (!holding) return;
+          holding = false;
+          stage.classList.remove('playing');
+          vid.pause();
+        }
+        stage.addEventListener('pointerdown', startHold);
+        stage.addEventListener('pointerup', endHold);
+        stage.addEventListener('pointercancel', endHold);
+        stage.addEventListener('pointerleave', endHold);
+        stage.addEventListener('contextmenu', function (e) { if (videoOk) e.preventDefault(); });
+      }
+
+      // Fetch the media in the background so the buttons respond instantly.
+      var photoBlobPromise = fetch(photoUrl, { mode: 'cors', credentials: 'omit' })
         .then(function (r) {
           if (r.status === 404 || r.status === 410) showGone();
           if (!r.ok) throw new Error('bad response');
@@ -290,54 +429,98 @@
         })
         .catch(function () { return null; });
 
-      function saveBlob(blob) {
+      var videoBlobPromise = videoUrl
+        ? fetch(videoUrl, { mode: 'cors', credentials: 'omit' })
+          .then(function (r) { if (!r.ok) throw new Error('bad response'); return r.blob(); })
+          .catch(function () { return null; })
+        : Promise.resolve(null);
+
+      if (videoUrl) {
+        videoBlobPromise.then(function (blob) { if (blob) $('dlVideo').hidden = false; });
+      }
+
+      function saveBlob(blob, name) {
         var a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
-        a.download = fileName;
+        a.download = name;
         document.body.appendChild(a);
         a.click();
         a.remove();
         setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
       }
 
-      function fallback() {
+      function fallback(url) {
         if (gone) return;
-        setStatus('Press and hold the photo, then choose “Download image” (or “Save image”).', 'warn');
+        setStatus('Press and hold the media, then choose “Download” (or “Save”).', 'warn');
         window.open(url, '_blank');
       }
 
-      $('dl').addEventListener('click', function () {
+      $('dlPhoto').addEventListener('click', function () {
         if (gone) return;
-        if (direct) {
-          setStatus('Downloading…', 'ok');
-          window.location.href = url;
+        if (directPhoto) {
+          setStatus('Downloading photo…', 'ok');
+          window.location.href = photoUrl;
           return;
         }
-        setStatus('Saving…');
-        blobPromise.then(function (blob) {
+        setStatus('Saving photo…');
+        photoBlobPromise.then(function (blob) {
           if (gone) return;
-          if (blob) { saveBlob(blob); setStatus('Saved! Check your Downloads or Gallery.', 'ok'); }
-          else fallback();
+          if (blob) { saveBlob(blob, photoFileName); setStatus('Photo saved! Check your Downloads or Gallery.', 'ok'); }
+          else fallback(photoUrl);
         });
       });
 
-      // "Share / Save to Photos" only appears on phones that can share image files (most Android and iPhones).
-      blobPromise.then(function (blob) {
-        if (gone || !blob || !navigator.canShare) return;
-        var file;
-        try { file = new File([blob], fileName, { type: blob.type || 'image/jpeg' }); } catch (e) { return; }
-        if (!navigator.canShare({ files: [file] })) return;
-        $('share').hidden = false;
-        $('share').addEventListener('click', function () {
-          setStatus('Opening share sheet…');
-          navigator.share({ files: [file] })
-            .then(function () { setStatus('Saved! Check your Photos or the app you shared to.', 'ok'); })
-            .catch(function (err) {
-              // User cancelling the share sheet isn't an error worth showing.
-              if (err && err.name === 'AbortError') { setStatus(''); return; }
-              setStatus('Couldn\'t share — try Download photo instead.', 'warn');
-            });
+      $('dlVideo').addEventListener('click', function () {
+        if (gone || !videoUrl) return;
+        if (directVideo) {
+          setStatus('Downloading video…', 'ok');
+          window.location.href = videoUrl;
+          return;
+        }
+        setStatus('Saving video…');
+        videoBlobPromise.then(function (blob) {
+          if (blob) { saveBlob(blob, videoFileName); setStatus('Video saved! Check your Downloads or Gallery.', 'ok'); }
+          else fallback(videoUrl);
         });
+      });
+
+      // "Share / Save to Photos" — shares the photo, and the video too when
+      // the device supports sharing multiple files at once; falls back to
+      // photo-only where that's not supported.
+      photoBlobPromise.then(function (photoBlob) {
+        if (gone || !photoBlob || !navigator.canShare) return;
+
+        function tryShare(files) {
+          if (!files.length) return;
+          if (!navigator.canShare({ files: files })) return;
+          $('share').hidden = false;
+          $('share').onclick = function () {
+            setStatus('Opening share sheet…');
+            navigator.share({ files: files })
+              .then(function () { setStatus('Saved! Check your Photos or the app you shared to.', 'ok'); })
+              .catch(function (err) {
+                if (err && err.name === 'AbortError') { setStatus(''); return; }
+                setStatus('Couldn\'t share — try the download buttons instead.', 'warn');
+              });
+          };
+        }
+
+        var photoFile;
+        try { photoFile = new File([photoBlob], photoFileName, { type: photoBlob.type || 'image/jpeg' }); } catch (e) { return; }
+
+        if (videoUrl) {
+          videoBlobPromise.then(function (videoBlob) {
+            if (videoBlob) {
+              try {
+                var videoFile = new File([videoBlob], videoFileName, { type: videoBlob.type || 'video/mp4' });
+                if (navigator.canShare({ files: [photoFile, videoFile] })) { tryShare([photoFile, videoFile]); return; }
+              } catch (e) { }
+            }
+            tryShare([photoFile]);
+          });
+        } else {
+          tryShare([photoFile]);
+        }
       });
     })();
   </script>
